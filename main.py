@@ -1,171 +1,165 @@
-import random
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-from config import BOT_TOKEN, ADMINS
-import db
+import sqlite3, random, asyncio, time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+import config
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+db = sqlite3.connect("db.sqlite3", check_same_thread=False)
+c = db.cursor()
 
-menu = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-menu.add(
-    "💰 Nạp tiền", "💸 Rút tiền",
-    "📅 Điểm danh", "👥 Mời bạn",
-    "🎯 Nhiệm vụ", "🏆 Đua top",
-    "🎁 Sự kiện", "📊 Số dư"
-)
+c.execute("""CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    balance REAL DEFAULT 0,
+    last_checkin INTEGER DEFAULT 0,
+    ref_by INTEGER DEFAULT 0,
+    total_deposit REAL DEFAULT 0,
+    deposit_count INTEGER DEFAULT 0
+)""")
 
-admin_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-admin_menu.add("⚙️ Cập nhật ngân hàng nạp")
+c.execute("""CREATE TABLE IF NOT EXISTS banks (
+    user_id INTEGER PRIMARY KEY,
+    bank TEXT,
+    stk TEXT,
+    name TEXT
+)""")
 
-@dp.message_handler(commands=["start"])
-async def start(msg: types.Message):
-    await db.add_user(msg.from_user.id)
-    await msg.answer("🤖 BOT TÀI CHÍNH\n1 điểm = 1.000 VNĐ", reply_markup=menu)
-    if msg.from_user.id in ADMINS:
-        await msg.answer("⚙️ MENU ADMIN", reply_markup=admin_menu)
+db.commit()
 
-@dp.message_handler(commands=["bank"])
-async def set_bank_cmd(msg: types.Message):
-    await msg.answer("🏦 Nhập ngân hàng theo mẫu:\nNgân hàng | STK | Tên chủ TK")
+def menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Nạp tiền", callback_data="deposit"),
+         InlineKeyboardButton("💸 Rút tiền", callback_data="withdraw")],
+        [InlineKeyboardButton("📅 Điểm danh", callback_data="checkin"),
+         InlineKeyboardButton("👥 Mời bạn", callback_data="invite")],
+        [InlineKeyboardButton("🎯 Nhiệm vụ", callback_data="task"),
+         InlineKeyboardButton("🏆 Đua top", callback_data="top")],
+        [InlineKeyboardButton("🎁 Sự kiện", callback_data="event"),
+         InlineKeyboardButton("⚙️ Ngân hàng", callback_data="bank")],
+        [InlineKeyboardButton("🎮 Game", callback_data="game"),
+         InlineKeyboardButton("📊 Số dư", callback_data="balance")]
+    ])
 
-@dp.message_handler(lambda m: "|" in m.text and len(m.text.split("|")) == 3)
-async def save_bank(msg: types.Message):
-    bank, stk, owner = [x.strip() for x in msg.text.split("|")]
-    await db.set_bank(msg.from_user.id, bank, stk, owner)
-    await msg.answer("✅ Đã lưu thông tin ngân hàng")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    c.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)",(uid,))
+    db.commit()
+    await update.message.reply_text("🎮 BOT GIẢI TRÍ TÀI CHÍNH ẢO", reply_markup=menu())
 
-@dp.message_handler(lambda m: m.text == "⚙️ Cập nhật ngân hàng nạp")
-async def admin_deposit_bank(msg: types.Message):
-    if msg.from_user.id not in ADMINS: return
-    await msg.answer("Nhập:\nNgân hàng | STK | Tên chủ TK | Nội dung CK")
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
 
-@dp.message_handler(lambda m: "|" in m.text and len(m.text.split("|")) == 4)
-async def save_deposit_bank(msg: types.Message):
-    if msg.from_user.id not in ADMINS: return
-    bank, stk, owner, content = [x.strip() for x in msg.text.split("|")]
-    await db.set_deposit_bank(bank, stk, owner, content)
-    await msg.answer("✅ Đã cập nhật ngân hàng nạp tiền")
+    if q.data == "balance":
+        c.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal = c.fetchone()[0]
+        await q.edit_message_text(f"💰 Số dư: {bal:.2f} USD", reply_markup=menu())
 
-@dp.message_handler(lambda m: m.text == "📊 Số dư")
-async def balance(msg):
-    bal = await db.get_balance(msg.from_user.id)
-    await msg.answer(f"💰 Số dư: {bal} điểm (~{bal*1000:,} VNĐ)")
+    elif q.data == "checkin":
+        now = int(time.time())
+        c.execute("SELECT last_checkin FROM users WHERE user_id=?", (uid,))
+        last = c.fetchone()[0]
+        if now - last < 86400:
+            await q.edit_message_text("❌ Bạn đã điểm danh hôm nay!", reply_markup=menu())
+            return
 
-@dp.message_handler(lambda m: m.text == "📅 Điểm danh")
-async def checkin(msg):
-    reward = random.randint(20,50)
-    await db.add_balance(msg.from_user.id, reward)
-    await msg.answer(f"🎁 +{reward} điểm")
+        reward = round(random.uniform(1,5),2)
+        c.execute("UPDATE users SET balance = balance + ?, last_checkin=? WHERE user_id=?", (reward, now, uid))
+        db.commit()
+        await q.edit_message_text(f"🎁 Bạn nhận {reward} USD!", reply_markup=menu())
 
-@dp.message_handler(lambda m: m.text == "👥 Mời bạn")
-async def invite(msg):
-    link = f"https://t.me/{(await bot.get_me()).username}?start={msg.from_user.id}"
-    await msg.answer(f"👥 Link mời:\n{link}\n+99 điểm")
+    elif q.data == "deposit":
+        context.user_data["wait_deposit"] = True
+        await q.edit_message_text("💰 Nhập số USD muốn nạp:")
 
-@dp.message_handler(lambda m: m.text == "🏆 Đua top")
-async def top(msg):
-    names = ["Minh Anh","Gia Huy","Tuấn Kiệt","Quốc Bảo","Thanh Tùng","Khánh Duy","Đức Anh","Quang Hưng","Hoàng Long","Hải Hoàng"]
-    random.shuffle(names)
-    text="🏆 BXH ĐUA TOP\n\n"
-    for i,n in enumerate(names[:10],1):
-        money=random.randint(5,50)*1_000_000
-        text+=f"{i}. {n} — {money:,}đ\n"
-    await msg.answer(text)
+    elif q.data == "withdraw":
+        c.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal = c.fetchone()[0]
+        if bal < 5:
+            await q.edit_message_text("❌ Số dư không đủ để rút!", reply_markup=menu())
+            return
+        context.user_data["wait_withdraw"] = True
+        await q.edit_message_text("💸 Nhập số USD muốn rút (5 - 10):")
 
-@dp.message_handler(lambda m: m.text == "💰 Nạp tiền")
-async def deposit(msg):
-    info = await db.get_deposit_bank()
-    if not info:
-        return await msg.answer("⚠️ Admin chưa cập nhật ngân hàng nạp")
-    bank, stk, owner, content = info
+    elif q.data == "bank":
+        context.user_data["set_bank"] = 1
+        await q.edit_message_text("🏦 Nhập tên ngân hàng:")
 
-    kb=InlineKeyboardMarkup().add(
-        InlineKeyboardButton("✅ Đã chuyển tiền",callback_data=f"paid_{msg.from_user.id}")
-    )
+    elif q.data == "game":
+        await q.edit_message_text("🎮 Game đang phát triển...")
 
-    await msg.answer(
-        f"💰 NẠP TIỀN\n\n"
-        f"🏦 {bank}\n💳 {stk}\n👤 {owner}\n\n"
-        f"📝 Nội dung: {content}",
-        reply_markup=kb
-    )
+    else:
+        await q.edit_message_text("⏳ Đang cập nhật...")
 
-@dp.callback_query_handler(lambda c: c.data.startswith("paid_"))
-async def paid(call):
-    uid=int(call.data.split("_")[1])
-    for admin in ADMINS:
-        kb=InlineKeyboardMarkup().add(
-            InlineKeyboardButton("✅ Duyệt +100",callback_data=f"nap_{uid}")
-        )
-        await bot.send_message(admin,f"💰 YÊU CẦU NẠP\nUser: {uid}",reply_markup=kb)
-    await call.message.answer("⏳ Chờ admin duyệt")
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    txt = update.message.text
 
-@dp.callback_query_handler(lambda c: c.data.startswith("nap_"))
-async def approve_nap(call):
-    uid=int(call.data.split("_")[1])
-    await db.add_balance(uid,100)
-    await bot.send_message(uid,"✅ Nạp thành công +100 điểm")
-    await call.message.edit_text("✔️ Đã duyệt")
+    if context.user_data.get("wait_deposit"):
+        usd = float(txt)
+        vnd = int(usd * config.USD_TO_VND)
+        context.user_data["wait_deposit"] = False
 
-@dp.message_handler(lambda m: m.text == "💸 Rút tiền")
-async def withdraw(msg):
-    bank = await db.get_bank(msg.from_user.id)
-    if not bank or not bank[0]:
-        return await msg.answer("⚠️ Chưa nhập ngân hàng\nGõ /bank")
-    await msg.answer("💸 Nhập số điểm muốn rút (20–200)")
+        c.execute("SELECT deposit_count FROM users WHERE user_id=?", (uid,))
+        count = c.fetchone()[0]
 
-@dp.message_handler(lambda m: m.text.isdigit())
-async def withdraw_amount(msg):
-    amount=int(msg.text)
-    if amount<20 or amount>200:
-        return await msg.answer("❌ 20–200")
+        bonus = 0
+        if count == 0: bonus = usd
+        elif count == 1: bonus = usd * 0.5
+        elif count == 2: bonus = usd * 0.25
 
-    bal=await db.get_balance(msg.from_user.id)
-    if bal<amount:
-        return await msg.answer("❌ Không đủ số dư")
+        total = usd + bonus
 
-    bank=await db.get_bank(msg.from_user.id)
-    bank_name,stk,owner=bank
+        c.execute("UPDATE users SET balance=balance+?, deposit_count=deposit_count+1 WHERE user_id=?", (total, uid))
+        db.commit()
 
-    for admin in ADMINS:
-        kb=InlineKeyboardMarkup().add(
-            InlineKeyboardButton("✅ Duyệt rút",callback_data=f"rut_{msg.from_user.id}_{amount}")
-        )
-        await bot.send_message(
-            admin,
-            f"💸 YÊU CẦU RÚT\nUser: {msg.from_user.id}\nSố điểm: {amount}\n\n"
-            f"🏦 {bank_name}\n💳 {stk}\n👤 {owner}",
-            reply_markup=kb
+        await update.message.reply_text(
+            f"✅ Nạp thành công!\n💰 Nhận: {total:.2f} USD (thưởng {bonus:.2f})",
+            reply_markup=menu()
         )
 
-    await msg.answer("⏳ Chờ admin duyệt")
+    elif context.user_data.get("wait_withdraw"):
+        usd = float(txt)
+        if usd < 5 or usd > 10:
+            await update.message.reply_text("❌ Mức rút không hợp lệ!", reply_markup=menu())
+            return
 
-@dp.callback_query_handler(lambda c: c.data.startswith("rut_"))
-async def approve_rut(call):
-    _,uid,amount=call.data.split("_")
-    uid=int(uid);amount=int(amount)
-    await db.add_balance(uid,-amount)
-    await bot.send_message(uid,f"✅ Rút thành công -{amount} điểm")
-    await call.message.edit_text("✔️ Đã duyệt")
+        c.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal = c.fetchone()[0]
+        if bal < usd:
+            await update.message.reply_text("❌ Không đủ số dư!", reply_markup=menu())
+            return
 
-@dp.message_handler(lambda m: m.text=="🎯 Nhiệm vụ")
-async def mission(msg):
-    await msg.answer("🎯 Trả lời câu hỏi (sắp nâng cấp AI)")
+        c.execute("UPDATE users SET balance=balance-? WHERE user_id=?", (usd, uid))
+        db.commit()
 
-@dp.message_handler(lambda m: m.text=="🎁 Sự kiện")
-async def event(msg):
-    await msg.answer(
-        "🎁 KHUYẾN MÃI\n\n"
-        "🆕 Tân thủ 3 ngày\n"
-        "🏆 Đua top nạp\n"
-        "👥 Đua top mời\n"
-        "💎 Nạp >2000 điểm/tuần +30%"
-    )
+        await update.message.reply_text(f"✅ Rút thành công {usd} USD", reply_markup=menu())
 
-async def on_startup(_):
-    await db.init_db()
+    elif context.user_data.get("set_bank") == 1:
+        context.user_data["bank"] = txt
+        context.user_data["set_bank"] = 2
+        await update.message.reply_text("💳 Nhập STK:")
 
-if __name__=="__main__":
-    executor.start_polling(dp,on_startup=on_startup)
+    elif context.user_data.get("set_bank") == 2:
+        context.user_data["stk"] = txt
+        context.user_data["set_bank"] = 3
+        await update.message.reply_text("👤 Nhập tên thụ hưởng:")
 
+    elif context.user_data.get("set_bank") == 3:
+        bank = context.user_data["bank"]
+        stk = context.user_data["stk"]
+        name = txt
+        c.execute("REPLACE INTO banks VALUES(?,?,?,?)",(uid,bank,stk,name))
+        db.commit()
+        context.user_data.clear()
+        await update.message.reply_text("✅ Cập nhật ngân hàng thành công!", reply_markup=menu())
+
+async def main():
+    app = ApplicationBuilder().token(config.TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    print("BOT ĐANG CHẠY...")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
