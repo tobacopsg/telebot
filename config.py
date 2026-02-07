@@ -1,5 +1,5 @@
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = "8241969129:AAHOWb1HP11WUx53kBuuXhd9frvgTYJRC-c"
 
 ADMINS = [6050668835]
