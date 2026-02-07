@@ -1,29 +1,28 @@
-import aiosqlite
+import sqlite3
 
-DB_NAME = "bot.db"
+conn = sqlite3.connect("data.db", check_same_thread=False)
+cur = conn.cursor()
 
-async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS users(
-            user_id INTEGER PRIMARY KEY,
-            balance REAL DEFAULT 0,
-            bank TEXT DEFAULT '',
-            referrals INTEGER DEFAULT 0,
-            last_daily INTEGER DEFAULT 0
-        )
-        """)
+def init_db():
+    cur.execute("""CREATE TABLE IF NOT EXISTS users(
+        user_id INTEGER PRIMARY KEY,
+        balance INTEGER DEFAULT 1000
+    )""")
+    conn.commit()
 
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS transactions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            amount REAL,
-            type TEXT,
-            status TEXT,
-            time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
+def get_user(uid):
+    cur.execute("SELECT * FROM users WHERE user_id=?", (uid,))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO users(user_id) VALUES(?)", (uid,))
+        conn.commit()
 
-        await db.commit()
+def get_balance(uid):
+    cur.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+    return cur.fetchone()[0]
+
+def set_balance(uid, bal):
+    cur.execute("UPDATE users SET balance=? WHERE user_id=?", (bal, uid))
+    conn.commit()
+
+
 
