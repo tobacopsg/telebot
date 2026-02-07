@@ -1,3 +1,4 @@
+import asyncio
 import os
 from aiogram import Bot, Dispatcher, executor, types
 from dotenv import load_dotenv
@@ -15,3 +16,7 @@ async def start(message: types.Message):
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
+if __name__ == "__main__":
+    from aiogram import executor
+    executor.start_polling(dp, skip_updates=True)
+
